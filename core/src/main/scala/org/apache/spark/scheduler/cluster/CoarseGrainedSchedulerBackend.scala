@@ -21,10 +21,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.annotation.concurrent.GuardedBy
 
+import org.apache.hadoop.yarn.api.records.{ContainerDetails, ContainerId}
+
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
-
 import org.apache.spark.{ExecutorAllocationClient, SparkEnv, SparkException, TaskState}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
@@ -32,6 +33,8 @@ import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.scheduler.cluster.CoarseGrainedSchedulerBackend.ENDPOINT_NAME
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, ThreadUtils, Utils}
+
+import scala.collection.mutable
 
 /**
  * A scheduler backend that waits for coarse-grained executors to connect.
@@ -165,8 +168,11 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
           addressToExecutorId(executorAddress) = executorId
           totalCoreCount.addAndGet(cores)
           totalRegisteredExecutors.addAndGet(1)
+          val details = new ContainerDetails
+          details.MemUtilization = 0
+          details.CpuUtilization = 0
           val data = new ExecutorData(executorRef, executorRef.address, hostname,
-            cores, cores, logUrls)
+            cores, cores, logUrls, details)
           // This must be synchronized because variables mutated
           // in this block are read when requesting executors
           CoarseGrainedSchedulerBackend.this.synchronized {
@@ -597,6 +603,25 @@ class CoarseGrainedSchedulerBackend(scheduler: TaskSchedulerImpl, val rpcEnv: Rp
    */
   protected def doKillExecutors(executorIds: Seq[String]): Future[Boolean] =
     Future.successful(false)
+
+  def getExecutorDataMap(): HashMap[String, ExecutorData] = {
+    executorDataMap
+  }
+
+  def getContainerStatus(): HashMap[String, ContainerDetails] = null
+
+  def updateTasksetResourceReq(jobId: Int, stageId: Int, maxUtil: ContainerDetails): Unit = Unit
+
+  def updateExecutorResourceReq(excRunning: HashMap[String, ContainerDetails]): Unit = synchronized{
+    logInfo("updateExecutorResourceReq in CGSB")
+    excRunning.foreach{case(eid, cd) =>
+        if (executorDataMap.isDefinedAt(eid)) {
+          executorDataMap.apply(eid).resourceUtilization.MemUtilization = cd.MemUtilization
+          executorDataMap.apply(eid).resourceUtilization.CpuUtilization = cd.CpuUtilization
+        }
+
+    }
+  }
 }
 
 private[spark] object CoarseGrainedSchedulerBackend {

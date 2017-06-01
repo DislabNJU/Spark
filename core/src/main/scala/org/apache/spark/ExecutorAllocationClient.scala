@@ -17,6 +17,11 @@
 
 package org.apache.spark
 
+import org.apache.hadoop.yarn.api.records.{ContainerDetails, ContainerId}
+
+import scala.collection.mutable.HashMap
+import scala.concurrent.Future
+
 /**
  * A client that communicates with the cluster manager to request or kill executors.
  * This is currently supported only in YARN mode.
@@ -63,4 +68,10 @@ private[spark] trait ExecutorAllocationClient {
    * @return whether the request is acknowledged by the cluster manager.
    */
   def killExecutor(executorId: String): Boolean = killExecutors(Seq(executorId))
+
+  def getContainerStatus(): HashMap[String, ContainerDetails]
+
+  def updateTasksetResourceReq(jobId: Int, stageId: Int, maxUtil: ContainerDetails): Unit
+
+  def updateExecutorResourceReq(excRunning: HashMap[String, ContainerDetails]): Unit
 }

@@ -988,6 +988,10 @@ class DAGScheduler(
         return
     }
 
+    taskIdToLocations.foreach{case(tid, lc) =>
+        logInfo(s" taskId: $tid" + s" locations: ${lc.toString}")
+    }
+
     stage.makeNewStageAttempt(partitionsToCompute.size, taskIdToLocations.values.toSeq)
     listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))
 

@@ -20,9 +20,9 @@ package org.apache.spark.scheduler.cluster
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
-
-import org.apache.hadoop.yarn.api.records.{ApplicationAttemptId, ApplicationId}
-
+import scala.concurrent.Await
+import scala.concurrent.duration._
+import org.apache.hadoop.yarn.api.records.{ApplicationAttemptId, ApplicationId, ContainerDetails, ContainerId}
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
@@ -30,6 +30,8 @@ import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.ui.JettyUtils
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
+
+import scala.collection.mutable.HashMap
 
 /**
  * Abstract Yarn scheduler backend that contains common logic
@@ -139,6 +141,15 @@ private[spark] abstract class YarnSchedulerBackend(
 
   override def sufficientResourcesRegistered(): Boolean = {
     totalRegisteredExecutors.get() >= totalExpectedExecutors * minRegisteredRatio
+  }
+
+  override def getContainerStatus(): HashMap[String, ContainerDetails] = {
+    val duration = Duration(1000, "millis")
+    // scalastyle:off awaitresult
+    Await.result(yarnSchedulerEndpointRef.
+      ask[HashMap[String, ContainerDetails]](GetContainerStatus()), duration)
+    // scalastyle:on awaitresult
+
   }
 
   /**
@@ -299,6 +310,21 @@ private[spark] abstract class YarnSchedulerBackend(
 
       case RetrieveLastAllocatedExecutorId =>
         context.reply(currentExecutorIdCounter)
+
+      case g: GetContainerStatus =>
+        amEndpoint match {
+          case Some(am) =>
+            am.ask[HashMap[String, ContainerDetails]](g).andThen {
+              case Success(b) => context.reply(b)
+                logInfo(s"GetContainerStatus in YarnSchedulerBackend")
+              case Failure(NonFatal(e)) =>
+                logError(s"Sending $g to AM was unsuccessful", e)
+                context.sendFailure(e)
+            }(ThreadUtils.sameThread)
+          case None =>
+            logWarning("Attempted to kill executors before the AM has registered!")
+            context.reply(null)
+        }
     }
 
     override def onDisconnected(remoteAddress: RpcAddress): Unit = {

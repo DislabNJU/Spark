@@ -254,7 +254,7 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
     handler.executorIdToContainer.keys.foreach { id => handler.killExecutor(id ) }
 
     val statuses = Seq(container1, container2).map { c =>
-      ContainerStatus.newInstance(c.getId(), ContainerState.COMPLETE, "Finished", 0)
+      ContainerStatus.newInstance(c.getId(), ContainerState.COMPLETE, null, "Finished", 0)
     }
     handler.updateResourceRequests()
     handler.processCompletedContainers(statuses.toSeq)
@@ -275,7 +275,7 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
     handler.requestTotalExecutorsWithPreferredLocalities(2, 0, Map())
 
     val statuses = Seq(container1, container2).map { c =>
-      ContainerStatus.newInstance(c.getId(), ContainerState.COMPLETE, "Failed", -1)
+      ContainerStatus.newInstance(c.getId(), ContainerState.COMPLETE, null, "Failed", -1)
     }
     handler.updateResourceRequests()
     handler.processCompletedContainers(statuses.toSeq)
@@ -316,7 +316,7 @@ class YarnAllocatorSuite extends SparkFunSuite with Matchers with BeforeAndAfter
     handler.handleAllocatedContainers(containers)
 
     val failedStatuses = containers.map { c =>
-      ContainerStatus.newInstance(c.getId, ContainerState.COMPLETE, "Failed", -1)
+      ContainerStatus.newInstance(c.getId, ContainerState.COMPLETE, null, "Failed", -1)
     }
 
     handler.getNumExecutorsFailed should be (0)

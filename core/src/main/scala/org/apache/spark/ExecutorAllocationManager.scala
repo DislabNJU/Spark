@@ -17,18 +17,21 @@
 
 package org.apache.spark
 
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{TimeUnit, TimeoutException}
 
 import scala.collection.mutable
 import scala.util.control.ControlThrowable
-
 import com.codahale.metrics.{Gauge, MetricRegistry}
-
+import org.apache.hadoop.yarn.api.records.{ContainerDetails, ContainerId}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{DYN_ALLOCATION_MAX_EXECUTORS, DYN_ALLOCATION_MIN_EXECUTORS}
 import org.apache.spark.metrics.source.Source
+import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.scheduler._
 import org.apache.spark.util.{Clock, SystemClock, ThreadUtils, Utils}
+
+import scala.collection.mutable.HashMap
+import scala.concurrent.Future
 
 /**
  * An agent that dynamically allocates and removes executors based on the workload.
@@ -152,6 +155,13 @@ private[spark] class ExecutorAllocationManager(
   private val executor =
     ThreadUtils.newDaemonSingleThreadScheduledExecutor("spark-dynamic-executor-allocation")
 
+  private val execgetcs =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("spark-getContainerStatus")
+
+  private val execUpdateExecutorTarget =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("spark-updateExecutorTarget")
+
+
   // Metric source for ExecutorAllocationManager to expose internal status to MetricsSystem.
   val executorAllocationManagerSource = new ExecutorAllocationManagerSource
 
@@ -167,6 +177,23 @@ private[spark] class ExecutorAllocationManager(
 
   // Host to possible task running on it, used for executor placement.
   private var hostToLocalTaskCount: Map[String, Int] = Map.empty
+
+  private var excRunning = new HashMap[String, ContainerDetails]
+
+  private val taskMaxUtilization = new HashMap[Long, ContainerDetails]
+
+  private val taskLocality = new HashMap[Long, TaskLocality]
+
+  private val SchedL: Long = conf.getLong("spark.EAM.SchedL", 5000)
+
+  private val delta: Double = conf.getDouble("spark.EAM.delta", 0.5)
+
+  private val rho: Double = conf.getDouble("spark.EAM.rho", 2)
+
+  private val lamda: Float = 1.5.toFloat
+
+  private var DECREASING: Boolean = false
+
 
   /**
    * Verify that the settings specified through the config are valid.
@@ -211,6 +238,78 @@ private[spark] class ExecutorAllocationManager(
     clock = newClock
   }
 
+  def updateMaxUtilization(excRes: HashMap[String, ContainerDetails]): Unit = {
+    if (excRes != null) {
+      try {
+        excRes.foreach{case(eid, cd) =>
+          if (listener.executorIdToTaskIds.isDefinedAt(eid)) {
+            val taskId = listener.executorIdToTaskIds.apply(eid)
+            if (taskId.size == 1) {
+              taskId.foreach{case(tid) =>
+                if (taskMaxUtilization.isDefinedAt(tid)) {
+                  if (taskMaxUtilization.apply(tid).MemUtilization < cd.MemUtilization) {
+                    taskMaxUtilization.apply(tid).MemUtilization = cd.MemUtilization
+                  }
+                  if (taskMaxUtilization.apply(tid).CpuUtilization < cd.CpuUtilization) {
+                    taskMaxUtilization.apply(tid).CpuUtilization = cd.CpuUtilization
+                  }
+                } else {
+                  taskMaxUtilization.put(tid, cd)
+                }
+
+              }
+            }
+          }
+        }
+      } catch {
+        case ct: ControlThrowable =>
+          throw ct
+        case t: Throwable =>
+          logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+      }
+
+    }
+
+  }
+
+  def updateExecutorResource(excRes: HashMap[String, ContainerDetails]): Unit = {
+    try {
+      excRes.foreach{case(eid, cd) =>
+        var factor: Float = 1
+        if (listener.executorIdToTaskIds.isDefinedAt(eid)) {
+          val taskId = listener.executorIdToTaskIds.apply(eid)
+          taskId.foreach{case(tid) =>
+            if (taskLocality.isDefinedAt(tid)) {
+              val tl = taskLocality.apply(tid)
+              if (tl != TaskLocality.NODE_LOCAL && tl != TaskLocality.PROCESS_LOCAL) {
+                factor *= lamda
+              }
+            }
+          }
+          cd.MemUtilization *= factor
+          cd.CpuUtilization *= factor
+          excRes.update(eid, cd)
+
+          logInfo(s" execId: $eid" +
+            s" taskNum: ${taskId.size}" +
+            s" factor: $factor" +
+            s" PMem: ${1 - cd.MemUtilization}" +
+            s" VMem: ${1 - cd.CpuUtilization}")
+        }
+
+
+      }
+      this.excRunning = excRes
+      client.updateExecutorResourceReq(excRes)
+
+    } catch {
+      case ct: ControlThrowable =>
+        throw ct
+      case t: Throwable =>
+        logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+    }
+  }
+
   /**
    * Register for scheduler callbacks to decide when to add and remove executors, and start
    * the scheduling task.
@@ -230,9 +329,48 @@ private[spark] class ExecutorAllocationManager(
         }
       }
     }
-    executor.scheduleWithFixedDelay(scheduleTask, 0, intervalMillis, TimeUnit.MILLISECONDS)
+    // executor.scheduleWithFixedDelay(scheduleTask, 0, intervalMillis, TimeUnit.MILLISECONDS)
 
     client.requestTotalExecutors(numExecutorsTarget, localityAwareTasks, hostToLocalTaskCount)
+
+    val getStatus = new Runnable() {
+      override def run(): Unit = {
+        try {
+          val containerStatus = getContainerStatus()
+          if(containerStatus != null) {
+            // excRunning = containerStatus
+            updateMaxUtilization(containerStatus)
+            updateExecutorResource(containerStatus)
+          }
+
+        } catch {
+          case ct: ControlThrowable =>
+            throw ct
+          case to: TimeoutException =>
+            logWarning("GetContainerStatus TimeOut")
+          case t: Throwable =>
+            logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+        }
+      }
+    }
+    execgetcs.scheduleWithFixedDelay(getStatus, 0, intervalMillis * 10, TimeUnit.MILLISECONDS)
+
+    val updateExecTarget = new Runnable() {
+      override def run(): Unit = {
+        try {
+            updateExecutorTarget()
+        } catch {
+          case ct: ControlThrowable =>
+            throw ct
+          case t: Throwable =>
+            logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+        }
+      }
+    }
+    updateExecTarget.run()
+    execUpdateExecutorTarget.scheduleWithFixedDelay(updateExecTarget, 0,
+      SchedL, TimeUnit.MILLISECONDS)
+
   }
 
   /**
@@ -512,7 +650,7 @@ private[spark] class ExecutorAllocationManager(
         }
         val realTimeout = if (timeout <= 0) Long.MaxValue else timeout // overflow
         removeTimes(executorId) = realTimeout
-        logDebug(s"Starting idle timer for $executorId because there are no more tasks " +
+        logInfo(s"Starting idle timer for $executorId because there are no more tasks " +
           s"scheduled to run on the executor (to expire in ${(realTimeout - now)/1000} seconds)")
       }
     } else {
@@ -529,6 +667,75 @@ private[spark] class ExecutorAllocationManager(
     removeTimes.remove(executorId)
   }
 
+  private def getContainerStatus(): HashMap[String, ContainerDetails] = {
+    val now = clock.getTimeMillis
+    removeTimes.retain { case (executorId, expireTime) =>
+      val expired = now >= expireTime
+      if (expired) {
+        if (!initializing) {
+          removeExecutor(executorId)
+        }
+      }
+      !expired
+    }
+
+    client.getContainerStatus
+  }
+
+  private def updateExecutorTarget(): Unit = {
+
+    if (excRunning != null) {
+      try {
+        var memAvgUtil: Float = 0
+        // var cpuAvgUtil: Float = 0
+        var totalNum = 0
+        excRunning.foreach{case(eid, cd) =>
+          if (! executorsPendingToRemove.contains(eid)) {
+            memAvgUtil += cd.MemUtilization
+            // cpuAvgUtil += cd.CpuUtilization
+            totalNum += 1
+          }
+        }
+        memAvgUtil /= totalNum
+        // cpuAvgUtil /= totalNum
+
+        val numExistingExecutors = executorIds.size - executorsPendingToRemove.size
+        if (memAvgUtil > 0) {
+          if (memAvgUtil < delta && listener.totalPendingTasks == 0) {
+            numExecutorsTarget = math.max((numExecutorsTarget / rho).toInt, 1)
+            client.requestTotalExecutors(numExecutorsTarget,
+              localityAwareTasks, hostToLocalTaskCount)
+            if (numExecutorsTarget < numExistingExecutors) {
+              DECREASING = true
+            }
+          } else if (numExecutorsTarget > numExistingExecutors) {
+            client.requestTotalExecutors(numExecutorsTarget,
+              localityAwareTasks, hostToLocalTaskCount)
+            DECREASING = false
+          } else {
+            numExecutorsTarget = (numExecutorsTarget * rho).toInt
+            client.requestTotalExecutors(numExecutorsTarget,
+              localityAwareTasks, hostToLocalTaskCount)
+            DECREASING = false
+          }
+
+          logInfo(s"memAvgUtil: $memAvgUtil" +
+            s" totalPendingTasks ${listener.totalPendingTasks}" +
+            s" numExecutorsTarget: $numExecutorsTarget" +
+            s" numExistingExecutors: ${executorIds.size - executorsPendingToRemove.size}" +
+            s" DECREASING: $DECREASING")
+        }
+
+      } catch {
+        case ct: ControlThrowable =>
+          throw ct
+        case t: Throwable =>
+          logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+      }
+    }
+
+  }
+
   /**
    * A listener that notifies the given allocation manager of when to add and remove executors.
    *
@@ -540,7 +747,7 @@ private[spark] class ExecutorAllocationManager(
 
     private val stageIdToNumTasks = new mutable.HashMap[Int, Int]
     private val stageIdToTaskIndices = new mutable.HashMap[Int, mutable.HashSet[Int]]
-    private val executorIdToTaskIds = new mutable.HashMap[String, mutable.HashSet[Long]]
+    val executorIdToTaskIds = new mutable.HashMap[String, mutable.HashSet[Long]]
     // Number of tasks currently running on the cluster.  Should be 0 when no stages are active.
     private var numRunningTasks: Int = _
 
@@ -605,6 +812,9 @@ private[spark] class ExecutorAllocationManager(
       val taskId = taskStart.taskInfo.taskId
       val taskIndex = taskStart.taskInfo.index
       val executorId = taskStart.taskInfo.executorId
+      initializing = false
+
+      taskLocality.put(taskId, taskStart.taskInfo.taskLocality)
 
       allocationManager.synchronized {
         numRunningTasks += 1
@@ -632,6 +842,7 @@ private[spark] class ExecutorAllocationManager(
       val taskId = taskEnd.taskInfo.taskId
       val taskIndex = taskEnd.taskInfo.index
       val stageId = taskEnd.stageId
+      val jobId = taskEnd.taskInfo.jobId
       allocationManager.synchronized {
         numRunningTasks -= 1
         // If the executor is no longer running any scheduled tasks, mark it as idle
@@ -640,6 +851,17 @@ private[spark] class ExecutorAllocationManager(
           if (executorIdToTaskIds(executorId).isEmpty) {
             executorIdToTaskIds -= executorId
             allocationManager.onExecutorIdle(executorId)
+
+            val numExistingExecutors = executorIds.size - executorsPendingToRemove.size
+            if ((numExistingExecutors > numExecutorsTarget) && DECREASING) {
+              client.killExecutor(executorId)
+              executorsPendingToRemove.add(executorId)
+            } else if ((numExistingExecutors <= numExecutorsTarget) && DECREASING) {
+              DECREASING = false
+            }
+            logInfo(s" onTaskEnd: numExistingExecutors: $numExistingExecutors" +
+              s" numExecutorsTarget: $numExecutorsTarget" +
+              s" DECREASING $DECREASING")
           }
         }
 
@@ -652,6 +874,15 @@ private[spark] class ExecutorAllocationManager(
           }
           stageIdToTaskIndices.get(stageId).foreach { _.remove(taskIndex) }
         }
+
+        if (taskMaxUtilization.isDefinedAt(taskId)) {
+          client.updateTasksetResourceReq(jobId, stageId, taskMaxUtilization.apply(taskId))
+        }
+        if (taskLocality.isDefinedAt(taskId)) {
+          taskLocality.remove(taskId)
+        }
+
+
       }
     }
 

@@ -24,15 +24,13 @@ import java.util.regex.Pattern
 import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, Queue}
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
-
+import scala.util.control.{ControlThrowable, NonFatal}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.yarn.api.records._
 import org.apache.hadoop.yarn.client.api.AMRMClient
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest
 import org.apache.hadoop.yarn.util.RackResolver
 import org.apache.log4j.{Level, Logger}
-
 import org.apache.spark.{SecurityManager, SparkConf, SparkException}
 import org.apache.spark.deploy.yarn.YarnSparkHadoopUtil._
 import org.apache.spark.deploy.yarn.config._
@@ -74,6 +72,10 @@ private[yarn] class YarnAllocator(
   if (Logger.getLogger(classOf[RackResolver]).getLevel == null) {
     Logger.getLogger(classOf[RackResolver]).setLevel(Level.WARN)
   }
+
+  val conRunning = new HashMap[ContainerId, NodeId]
+  val excRunning = new HashMap[String, ExecutorRunnable]
+  var containerStatus = new HashMap[String, ContainerDetails]
 
   // Visible for testing.
   val allocatedHostToContainersMap = new HashMap[String, collection.mutable.Set[ContainerId]]
@@ -243,6 +245,7 @@ private[yarn] class YarnAllocator(
       val container = executorIdToContainer.get(executorId).get
       internalReleaseContainer(container)
       numExecutorsRunning -= 1
+      excRunning.remove(executorId)
     } else {
       logWarning(s"Attempted to kill unknown executor $executorId!")
     }
@@ -477,9 +480,11 @@ private[yarn] class YarnAllocator(
       executorIdCounter += 1
       val executorHostname = container.getNodeId.getHost
       val containerId = container.getId
+      val nodeId = container.getNodeId
       val executorId = executorIdCounter.toString
       assert(container.getResource.getMemory >= resource.getMemory)
-      logInfo("Launching container %s for on host %s".format(containerId, executorHostname))
+      logInfo("Launching container %s for on host %s".format(containerId, executorHostname)
+        + s"conMem:${container.getResource.getMemory}")
 
       def updateInternalState(): Unit = synchronized {
         numExecutorsRunning += 1
@@ -490,6 +495,7 @@ private[yarn] class YarnAllocator(
           new HashSet[ContainerId])
         containerSet += containerId
         allocatedContainerToHostMap.put(containerId, executorHostname)
+        conRunning.put(containerId, nodeId)
       }
 
       if (numExecutorsRunning < targetNumExecutors) {
@@ -500,7 +506,7 @@ private[yarn] class YarnAllocator(
           launcherPool.execute(new Runnable {
             override def run(): Unit = {
               try {
-                new ExecutorRunnable(
+                val newExecutor = new ExecutorRunnable(
                   container,
                   conf,
                   sparkConf,
@@ -512,7 +518,9 @@ private[yarn] class YarnAllocator(
                   appAttemptId.getApplicationId.toString,
                   securityMgr,
                   localResources
-                ).run()
+                )
+                newExecutor.run()
+                excRunning.put(executorId, newExecutor)
                 updateInternalState()
               } catch {
                 case NonFatal(e) =>
@@ -607,6 +615,12 @@ private[yarn] class YarnAllocator(
         allocatedContainerToHostMap.remove(containerId)
       }
 
+      conRunning.remove(containerId)
+      if (containerIdToExecutorId.isDefinedAt(containerId) &&
+        excRunning.isDefinedAt(containerIdToExecutorId(containerId))) {
+        excRunning.remove(containerIdToExecutorId(containerId))
+      }
+
       containerIdToExecutorId.remove(containerId).foreach { eid =>
         executorIdToContainer.remove(eid)
         pendingLossReasonRequests.remove(eid) match {
@@ -653,6 +667,7 @@ private[yarn] class YarnAllocator(
     }
   }
 
+
   private def internalReleaseContainer(container: Container): Unit = {
     releasedContainers.add(container.getId())
     amClient.releaseAssignedContainer(container.getId())
@@ -695,6 +710,44 @@ private[yarn] class YarnAllocator(
     }
 
     (localityMatched.toSeq, localityUnMatched.toSeq, localityFree.toSeq)
+  }
+
+  def updateContainerStatus(): Unit = {
+    val newContainerStatus = new HashMap[String, ContainerDetails]
+    excRunning.foreach{case(excId, exc) =>
+      val containerId = executorIdToContainer(excId).getId
+      val nodeId = conRunning.apply(containerId)
+      val containerDetails = exc.getContainerStatus(containerId, nodeId).getDetails
+      newContainerStatus.put(excId, containerDetails)
+    }
+    /*
+    newContainerStatus.foreach{case(cid, cd) =>
+      logInfo(s"ContainerStatus: id $cid " +
+        s"details ${cd.MemUtilization}")
+    }
+    */
+    containerStatus = newContainerStatus
+
+  }
+
+  def getContainerStatus(): HashMap[String, ContainerDetails] = {
+    logInfo(s"GetContainerStatus in yarnAllocator")
+    val getStatus = new Runnable() {
+      override def run(): Unit = {
+        try {
+          updateContainerStatus()
+          logInfo(s"update ContainerStatus ")
+        } catch {
+          case ct: ControlThrowable =>
+            throw ct
+          case t: Throwable =>
+            logWarning(s"Uncaught exception in thread ${Thread.currentThread().getName}", t)
+        }
+      }
+    }
+    getStatus.run()
+
+    containerStatus
   }
 
 }

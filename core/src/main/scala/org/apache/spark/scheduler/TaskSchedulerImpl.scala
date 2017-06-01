@@ -22,20 +22,24 @@ import java.util.{Timer, TimerTask}
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
+import org.apache.hadoop.yarn.api.records.ContainerDetails
+
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.language.postfixOps
 import scala.util.Random
-
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler.TaskLocality.TaskLocality
+import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, ExecutorData}
 import org.apache.spark.scheduler.local.LocalSchedulerBackend
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, ThreadUtils, Utils}
+
+import scala.collection.mutable
 
 /**
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
@@ -112,6 +116,9 @@ private[spark] class TaskSchedulerImpl(
 
   var schedulableBuilder: SchedulableBuilder = null
   var rootPool: Pool = null
+
+  var tasksetResourceReq = new HashMap[Int, HashMap[Int, ContainerDetails]]
+
   // default scheduler is FIFO
   private val schedulingModeConf = conf.get("spark.scheduler.mode", "FIFO")
   val schedulingMode: SchedulingMode = try {
@@ -251,10 +258,52 @@ private[spark] class TaskSchedulerImpl(
       availableCpus: Array[Int],
       tasks: Seq[ArrayBuffer[TaskDescription]]) : Boolean = {
     var launchedTask = false
+
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
-      if (availableCpus(i) >= CPUS_PER_TASK) {
+
+      var fineGrainedOffer = false
+      var coarseGrainedOffer = true
+      var execResUtilization = new ContainerDetails
+      var taskResReq = new ContainerDetails
+      val jobId = taskSet.priority
+
+      // logInfo(s" isDefinedAtJob: ${tasksetResourceReq.isDefinedAt(jobId)}" +
+      // s" jobId: $jobId")
+
+      val executorDataMap = getExecutorDataMap()
+      if (tasksetResourceReq.isDefinedAt(jobId)) {
+        val tasksetsinJob = tasksetResourceReq.apply(jobId)
+
+        if (tasksetsinJob.isDefinedAt(taskSet.stageId) &&
+          executorDataMap != null && executorDataMap.isDefinedAt(execId)) {
+          coarseGrainedOffer = false
+          taskResReq = tasksetsinJob.apply(taskSet.stageId)
+          execResUtilization = executorDataMap.apply(execId).resourceUtilization
+          if (taskResReq.MemUtilization <= 1 - execResUtilization.MemUtilization) {
+            fineGrainedOffer = true
+          }
+        }
+        logInfo(s" offer: $i" +
+          s" stageId: ${taskSet.stageId}" +
+          // s" ${tasksetsinJob.isDefinedAt(taskSet.stageId)}" +
+          // s" ${executorDataMap != null}" +
+          // s" ${executorDataMap.isDefinedAt(execId)}" +
+          s" fine: $fineGrainedOffer" +
+          s" coarse: $coarseGrainedOffer" +
+          s" cpus: ${availableCpus(i)}" +
+          s" execId: $execId" +
+          s" execVMem ${1 - execResUtilization.CpuUtilization}" +
+          s" execPMem: ${1 - execResUtilization.MemUtilization}" +
+          s" taskReqPMem: ${taskResReq.MemUtilization}")
+      }
+
+
+
+
+      // if (availableCpus(i) >= CPUS_PER_TASK) {
+      if (fineGrainedOffer || coarseGrainedOffer && availableCpus(i) >= CPUS_PER_TASK) {
         try {
           for (task <- taskSet.resourceOffer(execId, host, maxLocality)) {
             tasks(i) += task
@@ -263,8 +312,15 @@ private[spark] class TaskSchedulerImpl(
             taskIdToExecutorId(tid) = execId
             executorIdToRunningTaskIds(execId).add(tid)
             executorsByHost(host) += execId
-            availableCpus(i) -= CPUS_PER_TASK
-            assert(availableCpus(i) >= 0)
+            if (coarseGrainedOffer) {
+              availableCpus(i) -= CPUS_PER_TASK
+              assert(availableCpus(i) >= 0)
+            }
+            if (fineGrainedOffer) {
+              execResUtilization.MemUtilization += taskResReq.MemUtilization
+              assert(execResUtilization.MemUtilization >= 0)
+            }
+
             launchedTask = true
           }
         } catch {
@@ -617,6 +673,39 @@ private[spark] class TaskSchedulerImpl(
       manager <- attempts.get(stageAttemptId)
     } yield {
       manager
+    }
+  }
+
+  def updateTasksetResourceReq(jobId: Int, stageId: Int, maxUtil: ContainerDetails): Unit
+  = synchronized {
+    if (tasksetResourceReq.isDefinedAt(jobId)) {
+      val tasksetsinJob = tasksetResourceReq.apply(jobId)
+      if (tasksetsinJob.isDefinedAt(stageId)) {
+        if (tasksetsinJob.apply(stageId).MemUtilization < maxUtil.MemUtilization) {
+          tasksetsinJob.apply(stageId).MemUtilization = maxUtil.MemUtilization
+        }
+      } else {
+        tasksetsinJob.put(stageId, maxUtil)
+      }
+      tasksetResourceReq.update(jobId, tasksetsinJob)
+    } else {
+      val tasksetsinJob = new HashMap[Int, ContainerDetails]
+      tasksetsinJob.put(stageId, maxUtil)
+      tasksetResourceReq.put(jobId, tasksetsinJob)
+    }
+
+
+
+  }
+
+  private def getExecutorDataMap(): HashMap[String, ExecutorData] = {
+    backend match {
+      case b: CoarseGrainedSchedulerBackend =>
+        b.getExecutorDataMap()
+
+      case _ =>
+        logWarning("getExecutorDataMap is only supported in coarse-grained mode")
+        null
     }
   }
 

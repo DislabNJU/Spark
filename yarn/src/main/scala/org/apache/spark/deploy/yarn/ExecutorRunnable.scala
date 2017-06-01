@@ -266,4 +266,9 @@ private[yarn] class ExecutorRunnable(
       .foreach { case (k, v) => env(k) = v }
     env
   }
+
+  def getContainerStatus(containerId: ContainerId, nodeId: NodeId): ContainerStatus = {
+    nmClient.getContainerStatus(containerId, nodeId)
+  }
+
 }

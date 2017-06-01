@@ -36,6 +36,8 @@ class TaskInfo(
     val taskLocality: TaskLocality.TaskLocality,
     val speculative: Boolean) {
 
+  var jobId = -1
+
   /**
    * The time when the task started remotely getting the result. Will not be set if the
    * task result was sent immediately when the task finished (as opposed to sending an

@@ -610,6 +610,10 @@ private[spark] class TaskSetManager(
     val index = info.index
     info.markSuccessful()
     removeRunningTask(tid)
+
+    // TODO added by lxb, not sure about it's correctness
+    info.jobId = priority
+
     // This method is called by "TaskSchedulerImpl.handleSuccessfulTask" which holds the
     // "TaskSchedulerImpl" lock until exiting. To avoid the SPARK-7655 issue, we should not
     // "deserialize" the value when holding a lock to avoid blocking other threads. So we call
@@ -640,6 +644,10 @@ private[spark] class TaskSetManager(
    */
   def handleFailedTask(tid: Long, state: TaskState, reason: TaskEndReason) {
     val info = taskInfos(tid)
+
+    // TODO added by lxb, not sure about it's correctness
+    info.jobId = priority
+
     if (info.failed) {
       return
     }
@@ -788,6 +796,10 @@ private[spark] class TaskSetManager(
     // so we would need to rerun these tasks on other executors.
     if (tasks(0).isInstanceOf[ShuffleMapTask] && !env.blockManager.externalShuffleServiceEnabled) {
       for ((tid, info) <- taskInfos if info.executorId == execId) {
+
+        // TODO added by lxb, not sure about it's correctness
+        info.jobId = priority
+
         val index = taskInfos(tid).index
         if (successful(index)) {
           successful(index) = false
