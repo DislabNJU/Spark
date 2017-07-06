@@ -193,6 +193,7 @@ class HadoopRDD[K, V](
 
   override def getPartitions: Array[Partition] = {
     val jobConf = getJobConf()
+
     // add the credentials here as this can be called before SparkContext initialized
     SparkHadoopUtil.get.addCredentials(jobConf)
     val inputFormat = getInputFormat(jobConf)
@@ -324,7 +325,18 @@ class HadoopRDD[K, V](
         }
       case None => None
     }
-    locs.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
+
+    logInfo(s" RDD name: ${this.name}")
+    val preidx = this.name.indexOf(":")
+    val hdfsName = this.name.substring(0, preidx + 3)
+    if (!hdfsName.equals("hdfs://")) {
+      val locsRemote: Option[Seq[String]] = locs.map(ol => ol.map(l => hdfsName + l))
+      logInfo(s" locsRemote: ${locsRemote.toString}")
+      locsRemote.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
+    } else {
+      logInfo(s" locs: ${locs.toString}")
+      locs.getOrElse(hsplit.getLocations.filter(_ != "localhost"))
+    }
   }
 
   override def checkpoint() {

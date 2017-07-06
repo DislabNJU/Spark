@@ -405,6 +405,7 @@ private[yarn] class YarnAllocator(
     // Match incoming requests by host
     val remainingAfterHostMatches = new ArrayBuffer[Container]
     for (allocatedContainer <- allocatedContainers) {
+      logInfo(s"all: ${allocatedContainer.getNodeId.getHost}")
       matchContainerToRequest(allocatedContainer, allocatedContainer.getNodeId.getHost,
         containersToUse, remainingAfterHostMatches)
     }
@@ -412,6 +413,7 @@ private[yarn] class YarnAllocator(
     // Match remaining by rack
     val remainingAfterRackMatches = new ArrayBuffer[Container]
     for (allocatedContainer <- remainingAfterHostMatches) {
+      logInfo(s"remaining1: ${allocatedContainer.getNodeId.getHost}")
       val rack = RackResolver.resolve(conf, allocatedContainer.getNodeId.getHost).getNetworkLocation
       matchContainerToRequest(allocatedContainer, rack, containersToUse,
         remainingAfterRackMatches)
@@ -420,6 +422,7 @@ private[yarn] class YarnAllocator(
     // Assign remaining that are neither node-local nor rack-local
     val remainingAfterOffRackMatches = new ArrayBuffer[Container]
     for (allocatedContainer <- remainingAfterRackMatches) {
+      logInfo(s"remaining2: ${allocatedContainer.getNodeId.getHost}")
       matchContainerToRequest(allocatedContainer, ANY_HOST, containersToUse,
         remainingAfterOffRackMatches)
     }
@@ -431,6 +434,13 @@ private[yarn] class YarnAllocator(
         internalReleaseContainer(container)
       }
     }
+    if (!containersToUse.isEmpty) {
+      for (container <- containersToUse) {
+        logInfo(s"remainingFinal: ${container.getNodeId.getHost}")
+      }
+    }
+
+    // val containersToUsetmp = ArrayBuffer(allocatedContainers : _*)
 
     runAllocatedContainers(containersToUse)
 
@@ -478,10 +488,20 @@ private[yarn] class YarnAllocator(
   private def runAllocatedContainers(containersToUse: ArrayBuffer[Container]): Unit = {
     for (container <- containersToUse) {
       executorIdCounter += 1
-      val executorHostname = container.getNodeId.getHost
+
+      var resolveHostname = container.getNodeId.getHost
+      if(resolveHostname.contains("hdfs")) {
+        val idx = resolveHostname.indexOf(":")
+        resolveHostname = resolveHostname.substring(idx + 3)
+      }
+      logInfo(s"toUse: $resolveHostname")
+      // val executorHostname = container.getNodeId.getHost
+      val executorHostname = resolveHostname
       val containerId = container.getId
       val nodeId = container.getNodeId
       val executorId = executorIdCounter.toString
+
+
       assert(container.getResource.getMemory >= resource.getMemory)
       logInfo("Launching container %s for on host %s".format(containerId, executorHostname)
         + s"conMem:${container.getResource.getMemory}")

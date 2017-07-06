@@ -184,6 +184,8 @@ private[spark] class ExecutorAllocationManager(
 
   private val taskLocality = new HashMap[Long, TaskLocality]
 
+  private val maxEffort: Boolean = conf.getBoolean("spark.EAM.maxEffort", true)
+
   private val SchedL: Long = conf.getLong("spark.EAM.SchedL", 5000)
 
   private val delta: Double = conf.getDouble("spark.EAM.delta", 0.5)
@@ -293,8 +295,8 @@ private[spark] class ExecutorAllocationManager(
           logInfo(s" execId: $eid" +
             s" taskNum: ${taskId.size}" +
             s" factor: $factor" +
-            s" PMem: ${1 - cd.MemUtilization}" +
-            s" VMem: ${1 - cd.CpuUtilization}")
+            s" PMem: ${1 - cd.MemUtilization}")
+            // s" VMem: ${1 - cd.CpuUtilization}")
         }
 
 
@@ -329,9 +331,6 @@ private[spark] class ExecutorAllocationManager(
         }
       }
     }
-    // executor.scheduleWithFixedDelay(scheduleTask, 0, intervalMillis, TimeUnit.MILLISECONDS)
-
-    client.requestTotalExecutors(numExecutorsTarget, localityAwareTasks, hostToLocalTaskCount)
 
     val getStatus = new Runnable() {
       override def run(): Unit = {
@@ -353,7 +352,6 @@ private[spark] class ExecutorAllocationManager(
         }
       }
     }
-    execgetcs.scheduleWithFixedDelay(getStatus, 0, intervalMillis * 10, TimeUnit.MILLISECONDS)
 
     val updateExecTarget = new Runnable() {
       override def run(): Unit = {
@@ -367,9 +365,18 @@ private[spark] class ExecutorAllocationManager(
         }
       }
     }
-    updateExecTarget.run()
-    execUpdateExecutorTarget.scheduleWithFixedDelay(updateExecTarget, 0,
-      SchedL, TimeUnit.MILLISECONDS)
+
+    execgetcs.scheduleWithFixedDelay(getStatus, 0, intervalMillis * 10, TimeUnit.MILLISECONDS)
+    if (maxEffort) {
+      execUpdateExecutorTarget.scheduleWithFixedDelay(updateExecTarget, 0, SchedL,
+        TimeUnit.MILLISECONDS)
+    } else {
+      executor.scheduleWithFixedDelay(scheduleTask, 0, intervalMillis, TimeUnit.MILLISECONDS)
+    }
+
+    client.requestTotalExecutors(numExecutorsTarget, localityAwareTasks, hostToLocalTaskCount)
+
+
 
   }
 
@@ -812,8 +819,9 @@ private[spark] class ExecutorAllocationManager(
       val taskId = taskStart.taskInfo.taskId
       val taskIndex = taskStart.taskInfo.index
       val executorId = taskStart.taskInfo.executorId
-      initializing = false
-
+      if (maxEffort) {
+        initializing = false
+      }
       taskLocality.put(taskId, taskStart.taskInfo.taskLocality)
 
       allocationManager.synchronized {
@@ -842,6 +850,7 @@ private[spark] class ExecutorAllocationManager(
       val taskId = taskEnd.taskInfo.taskId
       val taskIndex = taskEnd.taskInfo.index
       val stageId = taskEnd.stageId
+
       val jobId = taskEnd.taskInfo.jobId
       allocationManager.synchronized {
         numRunningTasks -= 1
@@ -852,16 +861,19 @@ private[spark] class ExecutorAllocationManager(
             executorIdToTaskIds -= executorId
             allocationManager.onExecutorIdle(executorId)
 
-            val numExistingExecutors = executorIds.size - executorsPendingToRemove.size
-            if ((numExistingExecutors > numExecutorsTarget) && DECREASING) {
-              client.killExecutor(executorId)
-              executorsPendingToRemove.add(executorId)
-            } else if ((numExistingExecutors <= numExecutorsTarget) && DECREASING) {
-              DECREASING = false
+            if (maxEffort) {
+              val numExistingExecutors = executorIds.size - executorsPendingToRemove.size
+              if ((numExistingExecutors > numExecutorsTarget) && DECREASING) {
+                client.killExecutor(executorId)
+                executorsPendingToRemove.add(executorId)
+              } else if ((numExistingExecutors <= numExecutorsTarget) && DECREASING) {
+                DECREASING = false
+              }
+              logInfo(s" onTaskEnd: numExistingExecutors: $numExistingExecutors" +
+                s" numExecutorsTarget: $numExecutorsTarget" +
+                s" DECREASING $DECREASING")
             }
-            logInfo(s" onTaskEnd: numExistingExecutors: $numExistingExecutors" +
-              s" numExecutorsTarget: $numExecutorsTarget" +
-              s" DECREASING $DECREASING")
+
           }
         }
 
@@ -881,7 +893,6 @@ private[spark] class ExecutorAllocationManager(
         if (taskLocality.isDefinedAt(taskId)) {
           taskLocality.remove(taskId)
         }
-
 
       }
     }

@@ -341,6 +341,7 @@ private[spark] class ApplicationMaster(
       _sparkConf.get("spark.driver.host"),
       _sparkConf.get("spark.driver.port").toInt,
       CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
+    logInfo("yarnAllocator creating")
     allocator = client.register(driverUrl,
       driverRef,
       yarnConf,
@@ -349,6 +350,7 @@ private[spark] class ApplicationMaster(
       historyAddress,
       securityMgr,
       localResources)
+    logInfo("yarnAllocator create success")
 
     allocator.allocateResources()
     reporterThread = launchReporterThread()

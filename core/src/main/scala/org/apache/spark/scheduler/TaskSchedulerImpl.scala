@@ -78,6 +78,9 @@ private[spark] class TaskSchedulerImpl(
   // CPUs to request per task
   val CPUS_PER_TASK = conf.getInt("spark.task.cpus", 1)
 
+  private val maxEffort: Boolean = conf.getBoolean("spark.EAM.maxEffort", true)
+
+
   // TaskSetManagers are not thread safe, so any access to one should be synchronized
   // on this class.
   private val taskSetsByStageIdAndAttempt = new HashMap[Int, HashMap[Int, TaskSetManager]]
@@ -269,37 +272,34 @@ private[spark] class TaskSchedulerImpl(
       var taskResReq = new ContainerDetails
       val jobId = taskSet.priority
 
-      // logInfo(s" isDefinedAtJob: ${tasksetResourceReq.isDefinedAt(jobId)}" +
-      // s" jobId: $jobId")
-
       val executorDataMap = getExecutorDataMap()
-      if (tasksetResourceReq.isDefinedAt(jobId)) {
-        val tasksetsinJob = tasksetResourceReq.apply(jobId)
+      if (maxEffort) {
+        if (tasksetResourceReq.isDefinedAt(jobId)) {
+          val tasksetsinJob = tasksetResourceReq.apply(jobId)
 
-        if (tasksetsinJob.isDefinedAt(taskSet.stageId) &&
-          executorDataMap != null && executorDataMap.isDefinedAt(execId)) {
-          coarseGrainedOffer = false
-          taskResReq = tasksetsinJob.apply(taskSet.stageId)
-          execResUtilization = executorDataMap.apply(execId).resourceUtilization
-          if (taskResReq.MemUtilization <= 1 - execResUtilization.MemUtilization) {
-            fineGrainedOffer = true
+          if (tasksetsinJob.isDefinedAt(taskSet.stageId) &&
+            executorDataMap != null && executorDataMap.isDefinedAt(execId)) {
+            coarseGrainedOffer = false
+            taskResReq = tasksetsinJob.apply(taskSet.stageId)
+            execResUtilization = executorDataMap.apply(execId).resourceUtilization
+            if (taskResReq.MemUtilization <= 1 - execResUtilization.MemUtilization) {
+              fineGrainedOffer = true
+            }
           }
+          logInfo(s" offer: $i" +
+            s" stageId: ${taskSet.stageId}" +
+            // s" ${tasksetsinJob.isDefinedAt(taskSet.stageId)}" +
+            // s" ${executorDataMap != null}" +
+            // s" ${executorDataMap.isDefinedAt(execId)}" +
+            s" fine: $fineGrainedOffer" +
+            s" coarse: $coarseGrainedOffer" +
+            s" cpus: ${availableCpus(i)}" +
+            s" execId: $execId" +
+            // s" execVMem ${1 - execResUtilization.CpuUtilization}" +
+            s" execPMem: ${1 - execResUtilization.MemUtilization}" +
+            s" taskReqPMem: ${taskResReq.MemUtilization}")
         }
-        logInfo(s" offer: $i" +
-          s" stageId: ${taskSet.stageId}" +
-          // s" ${tasksetsinJob.isDefinedAt(taskSet.stageId)}" +
-          // s" ${executorDataMap != null}" +
-          // s" ${executorDataMap.isDefinedAt(execId)}" +
-          s" fine: $fineGrainedOffer" +
-          s" coarse: $coarseGrainedOffer" +
-          s" cpus: ${availableCpus(i)}" +
-          s" execId: $execId" +
-          s" execVMem ${1 - execResUtilization.CpuUtilization}" +
-          s" execPMem: ${1 - execResUtilization.MemUtilization}" +
-          s" taskReqPMem: ${taskResReq.MemUtilization}")
       }
-
-
 
 
       // if (availableCpus(i) >= CPUS_PER_TASK) {

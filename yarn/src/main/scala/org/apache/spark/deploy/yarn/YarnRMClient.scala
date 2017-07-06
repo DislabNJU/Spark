@@ -74,6 +74,7 @@ private[spark] class YarnRMClient extends Logging {
       amClient.registerApplicationMaster(Utils.localHostName(), 0, uiAddress)
       registered = true
     }
+    logInfo("Registering the ApplicationMaster success")
     new YarnAllocator(driverUrl, driverRef, conf, sparkConf, amClient, getAttemptId(), securityMgr,
       localResources)
   }
