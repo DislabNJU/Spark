@@ -7,7 +7,8 @@ The blew figure is an one-slide overview. See the detailed introduction via [the
 ![Architecture](https://github.com/DislabNJU/Spark/blob/branch-2.0/oneslide.png)
 
 #What is semi-clairvoyance?
-fsdsdf
+Semi-clairvoyance means the the scheduler
+
 How Cobra works?
 ===
 Spark part in Cobra
