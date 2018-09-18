@@ -3,7 +3,7 @@ Introduction
 What is Cobra?
 ---
 Cobra is semi-clairvoyant scheduling strategy deployed in Spark on YARN system. Jobs employing this strategy have competitive performance compared to the clairvoyant schedulers, and have substantial performance improvement (job response time) compared to the built-in algorithms in the online average setting.
-![image](https://github.com/DislabNJU/Spark/blob/branch-2.0/oneslide.png)
+![Architecture](https://github.com/DislabNJU/Spark/blob/branch-2.0/oneslide.png)
 
 How Cobra works?
 ---
