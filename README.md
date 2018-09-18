@@ -14,6 +14,6 @@ As shown in the green rectangle in the above figure, three cases are classified 
 By how much a job's resources fluctuating depends on the parameter $\rho$.
 
 As mentioned, current implementation is carried in Spark on YARN system. The purple rectangle parts in the above figure is new. In Spark, we implement the Af and Pdelay algorithms. The detailed components and how they interact with the original ones can be shown in the below figure. 
-![Architecture](https://github.com/DislabNJU/Spark/blob/branch-2.0/architecture-detail.png)
 
+<img width="550" src="https://github.com/DislabNJU/Spark/blob/branch-2.0/architecture-detail.png"/>
 The primary code of our changes is in ./core/src/main/scala/org/apache/spark/ExecutorAllocationManager.scala 
