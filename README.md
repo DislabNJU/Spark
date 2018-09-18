@@ -11,7 +11,7 @@ Semi-clairvoyance means the the task scheduler in the job only has partitial kno
 
 How Cobra works?
 ===
-Spark part in Cobra
+As shown in the green rectangle,  
 
 The primary code of our changes is in ./core/src/main/scala/org/apache/spark/ExecutorAllocationManager.scala 
 
