@@ -7,7 +7,7 @@ The blew figure is an one-slide overview. See the detailed introduction via the 
 ![Architecture](https://github.com/DislabNJU/Spark/blob/branch-2.0/oneslide.png)
 
 ### What is semi-clairvoyance?
-Semi-clairvoyance means the the task scheduler in the job only has partitial knowledge of future characteristics, as contrary to the complete prior knowledge of the job structure. The semi-clairvoyance assumption is more gerenal and practical, and it captures the 
+Semi-clairvoyance means the the task scheduler in the job only has partitial knowledge of future characteristics, as contrary to the complete prior knowledge of the job structure. The semi-clairvoyance assumption is more practical, and it captures the key universally useful information of all-kind applications. Specifially, the only available information includes resource requirement and processing time of tasks in available stages.
 
 How Cobra works?
 ===
