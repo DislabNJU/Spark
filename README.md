@@ -6,7 +6,7 @@ Cobra is semi-clairvoyant scheduling strategy deployed in Spark on YARN system. 
 The blew figure is an one-slide overview. See the detailed introduction via [the papaer](https://github.com/DislabNJU/Spark/blob/branch-2.0/INFOCOM%20final%20version.pdf)
 ![Architecture](https://github.com/DislabNJU/Spark/blob/branch-2.0/oneslide.png)
 
-# What is semi-clairvoyance?
+### What is semi-clairvoyance?
 Semi-clairvoyance means the the scheduler
 
 How Cobra works?
