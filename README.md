@@ -13,7 +13,7 @@ How Cobra works?
 As shown in the green rectangle in the above figure, three cases are classified where the job could request more resources, or maintain current resources, or release some resources. The decision is made according to the resource utilization and the presence of waiting tasks.
 By how much a job's resources fluctuating depends on the parameter $\rho$.
 
-As mentioned, current implementation is carried in Spark on YARN system. The purple rectangle parts in the above figure is new. In Spark, we implement the Af and Pdelay algorithms. The detailed components and how they interact with the original ones can be shown in the below figure. 
+As mentioned, current implementation is carried in Spark on YARN system. The purple rectangle parts in the above figure is new. In Spark, we implement the Af and Pdelay algorithms. The detailed components and how they interact with the original ones can be shown in the below figure. The primary code of our changes is in [this](https://github.com/DislabNJU/Spark/blob/branch-2.0/core/src/main/scala/org/apache/spark/ExecutorAllocationManager.scala).
 
 <img width="550" src="https://github.com/DislabNJU/Spark/blob/branch-2.0/architecture-detail.png"/>
-The primary code of our changes is in ./core/src/main/scala/org/apache/spark/ExecutorAllocationManager.scala 
+
